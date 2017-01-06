@@ -464,9 +464,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
             let item = NSMenuItem()
             item.tag = i
             if p.remark.isEmpty {
-                item.title = "\(p.serverHost):\(p.serverPort)"
+                item.title = "\(p.serverHost)"
             } else {
-                item.title = "\(p.remark) (\(p.serverHost):\(p.serverPort))"
+                item.title = "\(p.remark) (\(p.serverHost))"
             }
             if mgr.activeProfileId == p.uuid {
                 item.state = 1
