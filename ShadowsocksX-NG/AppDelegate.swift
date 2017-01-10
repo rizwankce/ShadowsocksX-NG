@@ -7,7 +7,7 @@
 //
 
 import Cocoa
-
+import Carbon
 
 @NSApplicationMain
 class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDelegate {
@@ -18,7 +18,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
     var proxyPreferencesWinCtrl: ProxyPreferencesController!
     var editUserRulesWinCtrl: UserRulesController!
     var httpPreferencesWinCtrl : HTTPPreferencesWindowController!
-    
+
+    let keyCode = kVK_ANSI_P
+    let modifierKeys = cmdKey+controlKey
+    var hotKeyRef: EventHotKeyRef?
+
     var launchAtLoginController: LaunchAtLoginController = LaunchAtLoginController()
     
     @IBOutlet weak var window: NSWindow!
@@ -35,10 +39,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
     @IBOutlet weak var serversMenuItem: NSMenuItem!
     @IBOutlet var showQRCodeMenuItem: NSMenuItem!
     @IBOutlet var scanQRCodeMenuItem: NSMenuItem!
+    @IBOutlet var showBunchJsonExampleFileItem: NSMenuItem!
+    @IBOutlet var importBunchJsonFileItem: NSMenuItem!
+    @IBOutlet var exportAllServerProfileItem: NSMenuItem!
     @IBOutlet var serversPreferencesMenuItem: NSMenuItem!
     
     @IBOutlet weak var lanchAtLoginMenuItem: NSMenuItem!
-    
+
+    @IBOutlet weak var hudWindow: NSPanel!
+    @IBOutlet weak var panelView: NSView!
+    @IBOutlet weak var isNameTextField: NSTextField!
+
+    let kHudFadeInDuration: Double = 0.25
+    let kHudFadeOutDuration: Double = 0.5
+    let kHudDisplayDuration: Double = 2.0
+
+    let kHudAlphaValue: CGFloat = 0.75
+    let kHudCornerRadius: CGFloat = 18.0
+    let kHudHorizontalMargin: CGFloat = 30
+    let kHudHeight: CGFloat = 90.0
+
+    var timerToFadeOut: Timer? = nil
+    var fadingOut: Bool = false
+
     var statusItem: NSStatusItem!
     
     static let StatusItemIconWidth:CGFloat = 20
@@ -95,6 +118,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
                     }
                 }
                 self.updateServersMenu()
+                self.updateRunningModeMenu()
                 SyncSSLocal()
             }
         )
@@ -121,9 +145,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
                 var isChanged = false
                 
                 for url in urls {
-                    let profielDict = ParseSSURL(url)
-                    if let profielDict = profielDict {
-                        let profile = ServerProfile.fromDictionary(profielDict as [String : AnyObject])
+                    if let profile = ServerProfile(url: url) {
                         mgr.profiles.append(profile)
                         isChanged = true
                         
@@ -135,8 +157,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
                             userNote.subtitle = "By Handle SS URL".localized
                         }
                         userNote.informativeText = "Host: \(profile.serverHost)"
-                        " Port: \(profile.serverPort)"
-                        " Encription Method: \(profile.method)".localized
+                        //" Port: \(profile.serverPort)"
+                        //" Encription Method: \(profile.method)".localized
                         userNote.soundName = NSUserNotificationDefaultSoundName
                         
                         NSUserNotificationCenter.default
@@ -165,6 +187,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
         ProxyConfHelper.startMonitorPAC()
         applyConfig()
         SyncSSLocal()
+
+        // Register global hotkey
+        registerHotkey()
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
@@ -172,8 +197,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
         StopSSLocal()
         StopPrivoxy()
         ProxyConfHelper.disableProxy()
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
     }
-    
+
     func applyConfig() {
         let defaults = UserDefaults.standard
         let isOn = defaults.bool(forKey: "ShadowsocksOn")
@@ -195,7 +221,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
             ProxyConfHelper.disableProxy()
         }
     }
-    
+
+    // MARK: - Hotkey Methods
+    func registerHotkey() -> Void {
+        var gMyHotKeyID = EventHotKeyID()
+        gMyHotKeyID.signature = OSType(fourCharCodeFrom(string: "sxng"))
+        gMyHotKeyID.id = UInt32(keyCode)
+
+        var eventType = EventTypeSpec()
+        eventType.eventClass = OSType(kEventClassKeyboard)
+        eventType.eventKind = OSType(kEventHotKeyPressed)
+
+        // Void pointer to `self`:
+        let context = Unmanaged.passUnretained(self).toOpaque()
+
+        // Install handler.
+        InstallEventHandler(GetApplicationEventTarget(), {(nextHanlder, theEvent, userContext) -> OSStatus in
+            // Extract pointer to `self` from void pointer:
+            let mySelf = Unmanaged<AppDelegate>.fromOpaque(userContext!).takeUnretainedValue()
+
+            switch Globals.proxyType {
+            case .pac:
+                Globals.proxyType = .global
+                UserDefaults.standard.setValue("global", forKey: "ShadowsocksRunningMode")
+                mySelf.isNameTextField.stringValue = "Gobal Mode"
+                mySelf.updateRunningModeMenu()
+                mySelf.applyConfig()
+            case .global:
+                Globals.proxyType = .pac
+                UserDefaults.standard.setValue("auto", forKey: "ShadowsocksRunningMode")
+                mySelf.isNameTextField.stringValue = "Auto Mode"
+                mySelf.updateRunningModeMenu()
+                mySelf.applyConfig()
+            }
+
+            mySelf.fadeInHud()
+
+            return noErr
+        }, 1, &eventType, context, nil)
+
+        // Register hotkey.
+        RegisterEventHotKey(UInt32(keyCode),
+                            UInt32(modifierKeys),
+                            gMyHotKeyID,
+                            GetApplicationEventTarget(),
+                            0,
+                            &hotKeyRef)
+    }
+
+    func fourCharCodeFrom(string: String) -> FourCharCode {
+        assert(string.characters.count == 4, "String length must be 4")
+        var result: FourCharCode = 0
+        for char in string.utf16 {
+            result = (result << 8) + FourCharCode(char)
+        }
+        return result
+    }
+
+    // MARK: - UI Methods
     @IBAction func toggleRunning(_ sender: NSMenuItem) {
         let defaults = UserDefaults.standard
         var isOn = defaults.bool(forKey: "ShadowsocksOn")
@@ -256,7 +339,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
         ScanQRCodeOnScreen()
     }
     
-    @IBAction func toggleLaunghAtLogin(_ sender: NSMenuItem) {
+    @IBAction func showBunchJsonExampleFile(sender: NSMenuItem) {
+        ServerProfileManager.showExampleConfigFile()
+    }
+    
+    @IBAction func importBunchJsonFile(sender: NSMenuItem) {
+        ServerProfileManager.instance.importConfigFile()
+        //updateServersMenu()//not working
+    }
+    
+    @IBAction func exportAllServerProfile(sender: NSMenuItem) {
+        ServerProfileManager.instance.exportConfigFile()
+    }
+
+    @IBAction func toggleLaunghAtLogin(sender: NSMenuItem) {
         launchAtLoginController.launchAtLogin = !launchAtLoginController.launchAtLogin;
         updateLaunchAtLoginMenu()
     }
@@ -458,6 +554,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
         let showQRItem = showQRCodeMenuItem
         let scanQRItem = scanQRCodeMenuItem
         let preferencesItem = serversPreferencesMenuItem
+        let showBunch = showBunchJsonExampleFileItem
+        let importBuntch = importBunchJsonFileItem
+        let exportAllServer = exportAllServerProfileItem
         
         var i = 0
         for p in mgr.profiles {
@@ -484,6 +583,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
         }
         serversMenuItem.submenu?.addItem(showQRItem!)
         serversMenuItem.submenu?.addItem(scanQRItem!)
+        serversMenuItem.submenu?.addItem(showBunch!)
+        serversMenuItem.submenu?.addItem(importBuntch!)
+        serversMenuItem.submenu?.addItem(exportAllServer!)
         serversMenuItem.submenu?.addItem(NSMenuItem.separator())
         serversMenuItem.submenu?.addItem(preferencesItem!)
     }
@@ -510,3 +612,93 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSUserNotificationCenterDele
     }
 }
 
+extension AppDelegate {
+    func fadeInHud() -> Void {
+        if timerToFadeOut != nil {
+            timerToFadeOut?.invalidate()
+            timerToFadeOut = nil
+        }
+
+        fadingOut = false
+
+        hudWindow.orderFrontRegardless()
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(kHudFadeInDuration)
+        CATransaction.setCompletionBlock { self.didFadeIn() }
+        panelView.layer?.opacity = 1.0
+        CATransaction.commit()
+    }
+
+    func didFadeIn() -> Void {
+        timerToFadeOut = Timer.scheduledTimer(
+            timeInterval: kHudDisplayDuration,
+            target: self,
+            selector: #selector(fadeOutHud),
+            userInfo: nil,
+            repeats: false)
+    }
+
+    func fadeOutHud() -> Void {
+        fadingOut = true
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(kHudFadeOutDuration)
+        CATransaction.setCompletionBlock { self.didFadeOut() }
+        panelView.layer?.opacity = 0.0
+        CATransaction.commit()
+    }
+
+    func didFadeOut() -> Void {
+        if fadingOut {
+            self.hudWindow.orderOut(nil)
+        }
+        fadingOut = false
+    }
+
+    func setupHud() -> Void {
+        isNameTextField.stringValue = "Global Mode"
+        isNameTextField.sizeToFit()
+
+        var labelFrame: CGRect = isNameTextField.frame
+        var hudWindowFrame: CGRect = hudWindow.frame
+        hudWindowFrame.size.width = labelFrame.size.width + kHudHorizontalMargin * 2
+        hudWindowFrame.size.height = kHudHeight
+
+        let screenRect: NSRect = NSScreen.screens()![0].visibleFrame
+        hudWindowFrame.origin.x = (screenRect.size.width - hudWindowFrame.size.width) / 2
+        hudWindowFrame.origin.y = (screenRect.size.height - hudWindowFrame.size.height) / 2
+        hudWindow.setFrame(hudWindowFrame, display: true)
+
+        var viewFrame: NSRect = hudWindowFrame;
+        viewFrame.origin.x = 0
+        viewFrame.origin.y = 0
+        panelView.frame = viewFrame
+
+        labelFrame.origin.x = kHudHorizontalMargin
+        labelFrame.origin.y = (hudWindowFrame.size.height - labelFrame.size.height) / 2
+        isNameTextField.frame = labelFrame
+    }
+
+    func initUIComponent() -> Void {
+        hudWindow.isOpaque = false
+        hudWindow.backgroundColor = .clear
+        hudWindow.level = Int(CGWindowLevelForKey(.utilityWindow)) + 1000
+        hudWindow.styleMask = .borderless
+        hudWindow.hidesOnDeactivate = false
+        hudWindow.collectionBehavior = .canJoinAllSpaces
+
+        let viewLayer: CALayer = CALayer()
+        viewLayer.backgroundColor = CGColor.init(red: 0.05, green: 0.05, blue: 0.05, alpha: kHudAlphaValue)
+        viewLayer.cornerRadius = kHudCornerRadius
+        panelView.wantsLayer = true
+        panelView.layer = viewLayer
+        panelView.layer?.opacity = 0.0
+
+        setupHud()
+    }
+    
+    override func awakeFromNib() {
+        initUIComponent()
+    }
+}
